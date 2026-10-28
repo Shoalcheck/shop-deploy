@@ -1,0 +1,83 @@
+# The gate every pull request passes before it can merge.
+#
+# A real deployment points the gate at its live cluster with a KUBECONFIG secret. This demo has no production to
+# point at, so the job starts a kind cluster in the runner and applies main's manifests to it: that cluster is the
+# live state the pull request is laid over. Then `shoalcheck gate --with` reads it read-only, lays the pull request's
+# rendered manifests over that reading in memory, and fails on anything new at high or above. Nothing from the pull
+# request is ever applied.
+name: shoalcheck gate
+on:
+  pull_request:
+    paths: ['deploy/**', '.github/workflows/shoalcheck.yml']
+permissions:
+  contents: read
+  pull-requests: write   # the comment that carries the gate's own words
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ vars.SHOALCHECK_VERSION }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: v2.5.2
+      - name: Install shoalcheck
+        run: |
+          base="https://github.com/Shoalcheck/shoalcheck/releases/download/v${VERSION}"
+          archive="shoalcheck_${VERSION}_linux_amd64.tar.gz"
+          for f in "$archive" checksums.txt checksums.txt.sigstore.json; do
+            curl -fsSLO "$base/$f"
+          done
+          cat > cosign.pub <<'KEY'
+          -----BEGIN PUBLIC KEY-----
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE69u2ja9r2k/Vy8lSibowBdCnCD3P
+          OVzmcbjHVIvMgoOfkEzEwOY/b8kyjTVJcwrJ89+qC5bjW4XzLqz1S/AryQ==
+          -----END PUBLIC KEY-----
+          KEY
+          cosign verify-blob --key cosign.pub --bundle checksums.txt.sigstore.json checksums.txt
+          grep " $archive\$" checksums.txt | sha256sum -c -
+          sudo tar xz -C /usr/local/bin -f "$archive" shoalcheck
+          shoalcheck version
+      - name: The live cluster, as main describes it
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: shop-prod
+      - name: Apply main's manifests
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          mkdir -p "$RUNNER_TEMP/base"
+          git archive FETCH_HEAD deploy | tar -x -C "$RUNNER_TEMP/base"
+          kubectl apply -k "$RUNNER_TEMP/base/deploy"
+          kubectl -n payments rollout status deploy/checkout --timeout=180s
+      - name: Render the pull request's manifests
+        run: |
+          mkdir -p "$RUNNER_TEMP/change"
+          kubectl kustomize deploy/ > "$RUNNER_TEMP/change/rendered.yaml"
+      - name: Gate
+        env:
+          SHOALCHECK_HOME: ${{ runner.temp }}/shoalcheck
+          SHOALCHECK_LICENCE: ${{ secrets.SHOALCHECK_LICENCE }}
+        run: |
+          set +e
+          shoalcheck gate \
+            --context kind-shop-prod \
+            --with "$RUNNER_TEMP/change" \
+            --fail-on new:high,regressed,unreadable,not-evaluated \
+            --json shoalcheck-reading.json \
+            -o text > gate.txt
+          code=$?
+          set -e
+          cat gate.txt
+          { echo '### shoalcheck gate'; echo; echo '```'; grep -v '^collect' gate.txt; echo '```'; } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          echo "$code" > code.txt
+          exit $code
+      - name: Say it on the pull request
+        if: always() && hashFiles('comment.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --body-file comment.md --edit-last --create-if-none

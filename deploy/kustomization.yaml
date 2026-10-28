@@ -1,2 +1,3 @@
 resources:
   - payments.yaml
+  - ledger-exporter.yaml

@@ -29,7 +29,13 @@ spec:
   selector: {matchLabels: {app: ledger-exporter}}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata: {name: ledger-exporter-admin}
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin}
+kind: Role
+metadata: {name: ledger-exporter, namespace: payments}
+rules:
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [ledger-export], verbs: [get]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ledger-exporter, namespace: payments}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ledger-exporter}
 subjects: [{kind: ServiceAccount, name: ledger-exporter, namespace: payments}]

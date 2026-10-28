@@ -62,12 +62,13 @@ jobs:
           SHOALCHECK_LICENCE: ${{ secrets.SHOALCHECK_LICENCE }}
         run: |
           set +e
-          shoalcheck gate \
+          # From the temp directory, so the gate names the change as change/rendered.yaml rather than a runner path.
+          (cd "$RUNNER_TEMP" && shoalcheck gate \
             --context kind-shop-prod \
-            --with "$RUNNER_TEMP/change" \
+            --with change \
             --fail-on new:high,regressed,unreadable,not-evaluated \
-            --json shoalcheck-reading.json \
-            -o text > gate.txt
+            --json "$GITHUB_WORKSPACE/shoalcheck-reading.json" \
+            -o text) > gate.txt
           code=$?
           set -e
           cat gate.txt
